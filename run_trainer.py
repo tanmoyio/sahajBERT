@@ -18,13 +18,11 @@ from transformers import AlbertTokenizerFast
 from transformers.trainer import Trainer
 
 import hivemind
-import torch_xla.core.xla_model as xm
 
 import callback
 from lib import LeanAlbertConfig
 from lib.models import LeanAlbertForPreTraining
 from lib.training.clipped_lamb import LambWithGradientClipping
-from lib.training.multi_tpu import TPUCollaborativeOptimizer
 from lib.training.noop import NoOpScheduler, IgnoreGradManipulations
 from lib.training.offload import OffloadOptimizer
 
@@ -127,9 +125,10 @@ class TrainerWithIndependentShuffling(Trainer):
 
 
 def main(index: Optional[int] = None):
+    if index is not None:
+        print(f"launched TPU with device index {index}")
     tpu = index is not None
 
-    print(f"launched with device index {index}")
     parser = HfArgumentParser((AlbertTrainingArguments, DatasetArguments, CollaborationArguments, AveragerArguments))
     training_args, dataset_args, collaboration_args, averager_args = parser.parse_args_into_dataclasses()
 
@@ -149,29 +148,23 @@ def main(index: Optional[int] = None):
     if tpu:
         model.tie_weights()
 
-    validators, local_public_key = utils.make_validators(collaboration_args.experiment_prefix)
-    if xm.is_master_ordinal():
-        dht = hivemind.DHT(
-            start=True, initial_peers=collaboration_args.initial_peers,
-            client_mode=collaboration_args.client_mode,
-            host_maddrs=collaboration_args.host_maddrs,
-            announce_maddrs=collaboration_args.announce_maddrs,
-            use_ipfs=collaboration_args.use_ipfs,
-            record_validators=validators,
-        )
+    opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
-        utils.log_visible_maddrs(dht.get_visible_maddrs(), only_p2p=collaboration_args.use_ipfs)
-        opt, scheduler = get_optimizer_and_scheduler(training_args, model)
-    else:
-        dht = None
-        opt, scheduler = None, NoOpScheduler()
+    validators, local_public_key = utils.make_validators(collaboration_args.experiment_prefix)
+    dht = hivemind.DHT(
+        start=True, initial_peers=collaboration_args.initial_peers,
+        client_mode=collaboration_args.client_mode,
+        host_maddrs=collaboration_args.host_maddrs,
+        announce_maddrs=collaboration_args.announce_maddrs,
+        use_ipfs=collaboration_args.use_ipfs,
+        record_validators=validators,
+    )
+
+    utils.log_visible_maddrs(dht.get_visible_maddrs(), only_p2p=collaboration_args.use_ipfs)
 
     total_batch_size_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
     if torch.cuda.device_count() != 0:
         total_batch_size_per_step *= torch.cuda.device_count()
-
-    cctx = xm.CollectiveContext()
-    total_batch_size_per_step *= cctx.world_size
 
     statistics_expiration = collaboration_args.statistics_expiration
     adjusted_target_batch_size = collaboration_args.target_batch_size - collaboration_args.batch_size_lead
@@ -179,7 +172,7 @@ def main(index: Optional[int] = None):
     averaging_compression = SizeAdaptiveCompression(
         threshold=2 ** 16 + 1, less=Float16Compression(), greater_equal=Uniform8BitQuantization()),
 
-    collaborative_optimizer = TPUCollaborativeOptimizer(
+    collaborative_optimizer = hivemind.CollaborativeOptimizer(
         opt=opt, dht=dht, scheduler=scheduler, prefix=collaboration_args.experiment_prefix,
         compression=averaging_compression, state_compression=Float16Compression(),
         batch_size_per_step=total_batch_size_per_step, bandwidth=collaboration_args.bandwidth,
@@ -187,23 +180,16 @@ def main(index: Optional[int] = None):
         reuse_grad_buffers=True, verbose=True, start=True, **asdict(averager_args),
     )
 
-    if xm.is_master_ordinal():
-        collaborative_training_callback = callback.CollaborativeCallback(
-            dht, collaborative_optimizer, model, local_public_key, statistics_expiration
-        )
-        callbacks = [collaborative_training_callback]
-    else:
-        training_args.report_to = 'none'
-        callbacks = []
+    collaborative_training_callback = callback.CollaborativeCallback(
+        dht, collaborative_optimizer, model, local_public_key, statistics_expiration
+    )
 
     assert training_args.do_train and not training_args.do_eval
     training_dataset = make_lazy_wikioscar_dataset(tokenizer, shuffle_seed=hash(local_public_key) % 2 ** 31)
 
     # This data collator will take care of randomly masking the tokens.
-    data_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer)
-    #AlbertDataCollatorForWholeWordMask(tokenizer=tokenizer, pad_to_multiple_of=training_args.pad_to_multiple_of)
-
-    xm.rendezvous()
+    data_collator = AlbertDataCollatorForWholeWordMask(
+        tokenizer=tokenizer, pad_to_multiple_of=training_args.pad_to_multiple_of)
 
     # Note: the code below creates the trainer with dummy scheduler and removes some callbacks.
     # This is done because collaborative training has its own callbacks that take other peers into account.
@@ -212,7 +198,7 @@ def main(index: Optional[int] = None):
         data_collator=data_collator, data_seed=hash(local_public_key),
         train_dataset=training_dataset, eval_dataset=None,
         optimizers=(collaborative_optimizer, NoOpScheduler(collaborative_optimizer)),
-        callbacks=callbacks
+        callbacks=[collaborative_training_callback]
     )
     trainer.remove_callback(transformers.trainer_callback.PrinterCallback)
     trainer.remove_callback(transformers.trainer_callback.ProgressCallback)

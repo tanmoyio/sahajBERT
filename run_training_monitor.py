@@ -7,11 +7,13 @@ from typing import Optional
 
 import torch
 import wandb
+from hivemind import Float16Compression, SizeAdaptiveCompression, Uniform8BitQuantization
+from hivemind.averaging.training import load_optimizer_state
 from transformers import HfArgumentParser, AlbertTokenizerFast
 
 import hivemind
 import utils
-from arguments import BaseTrainingArguments, CollaborativeOptimizerArguments, AveragerArguments
+from arguments import BaseTrainingArguments, CollaborativeOptimizerArguments, AveragerArguments, AlbertTrainingArguments
 from run_trainer import get_model, get_optimizer_and_scheduler
 from lib.models.config import LeanAlbertConfig
 
@@ -47,9 +49,14 @@ class TrainingMonitorArguments(BaseTrainingArguments):
         default=None, metadata={"help": "Frequency (in seconds) of uploading the model to Hub"}
     )
     store_checkpoins: bool = field(default=False, metadata={"help": "If True, enables CheckpointHandler"})
-
-    #TODO remove the args below and figure out a better way to instantiate the correct model/opt
-    output_dir: str = "outputs"
+    initial_state_path: Optional[str] = field(default=None, metadata={"help": "Path to the initial checkpoint"})
+    identity_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to a pre-generated private key file. If defined, makes the peer ID deterministic. "
+                    "May be generated using ``./p2p-keygen`` from ``go-libp2p-daemon``."
+        },
+    )
     tokenizer_path: Optional[str] = field(default="tokenizer/tokenizer", metadata={"help": "Path to the tokenizer"})
     cache_dir: Optional[str] = field(default="cache", metadata={"help": "Path to the cache"})
 
@@ -58,6 +65,7 @@ class CheckpointHandler:
     def __init__(
         self,
         monitor_args: TrainingMonitorArguments,
+        training_args: AlbertTrainingArguments,
         collab_optimizer_args: CollaborativeOptimizerArguments,
         averager_args: AveragerArguments,
         dht: hivemind.DHT,
@@ -70,22 +78,43 @@ class CheckpointHandler:
 
         config = LeanAlbertConfig.from_pretrained(monitor_args.model_config_path)
         tokenizer = AlbertTokenizerFast.from_pretrained(monitor_args.tokenizer_path, cache_dir=monitor_args.cache_dir)
-        self.model = get_model(monitor_args, config, tokenizer)
-        opt, scheduler = get_optimizer_and_scheduler(monitor_args, self.model)
+        self.model = get_model(training_args, config, tokenizer)
+        opt, scheduler = get_optimizer_and_scheduler(training_args, self.model)
         adjusted_target_batch_size = collab_optimizer_args.target_batch_size - collab_optimizer_args.batch_size_lead
+
+        averaging_compression = SizeAdaptiveCompression(
+            threshold=2 ** 16 + 1, less=Float16Compression(), greater_equal=Uniform8BitQuantization()),
 
         self.collaborative_optimizer = hivemind.CollaborativeOptimizer(
             opt=opt,
             dht=dht,
             prefix=experiment_prefix,
-            compression_type=hivemind.utils.CompressionType.Value(collab_optimizer_args.compression),
-            throughput=collab_optimizer_args.bandwidth,
+            compression=averaging_compression, state_compression=Float16Compression(),
+            bandwidth=collab_optimizer_args.bandwidth,
             target_batch_size=adjusted_target_batch_size,
             client_mode=collab_optimizer_args.client_mode,
             verbose=True,
             start=True,
             **asdict(averager_args),
         )
+
+        if monitor_args.initial_state_path is not None:
+            logger.info(f"Loading initial state from {monitor_args.initial_state_path}...")
+            parameters_and_extras = [param for param_group in self.collaborative_optimizer.opt.param_groups
+                                     for param in param_group["params"]]
+            metadata, flat_tensors = torch.load(monitor_args.initial_state_path)
+            parameters_and_extras.extend(self.collaborative_optimizer.averager.extra_tensors)
+            num_local_tensors = len(parameters_and_extras)
+            loaded_parameters_and_extras = flat_tensors[:num_local_tensors]
+            loaded_opt_tensors = flat_tensors[num_local_tensors:]
+            with torch.no_grad():
+                for local_param, loaded_param in zip(parameters_and_extras, loaded_parameters_and_extras):
+                    local_param[...] = loaded_param
+                load_optimizer_state(
+                    self.collaborative_optimizer.opt, metadata["optimizer_metadata"], loaded_opt_tensors)
+            self.local_step = max(self.collaborative_optimizer.local_step, metadata["step"])
+            logger.info(f"State loaded, starting from step {self.local_step}")
+
         self.previous_timestamp = time.time()
 
     def is_time_to_save_state(self, cur_step):
@@ -124,8 +153,8 @@ class CheckpointHandler:
 
 if __name__ == "__main__":
     parser = HfArgumentParser(
-        (TrainingMonitorArguments, CollaborativeOptimizerArguments, AveragerArguments))
-    monitor_args, collab_optimizer_args, averager_args = parser.parse_args_into_dataclasses()
+        (TrainingMonitorArguments, AlbertTrainingArguments, CollaborativeOptimizerArguments, AveragerArguments))
+    monitor_args, training_args, collab_optimizer_args, averager_args = parser.parse_args_into_dataclasses()
 
     experiment_prefix = monitor_args.experiment_prefix
     validators, local_public_key = utils.make_validators(experiment_prefix)
@@ -137,6 +166,7 @@ if __name__ == "__main__":
         use_ipfs=monitor_args.use_ipfs,
         host_maddrs=monitor_args.host_maddrs,
         announce_maddrs=monitor_args.announce_maddrs,
+        identity_path=monitor_args.identity_path,
     )
     utils.log_visible_maddrs(dht.get_visible_maddrs(), only_p2p=monitor_args.use_ipfs)
 
@@ -145,7 +175,7 @@ if __name__ == "__main__":
 
     current_step = 0
     if monitor_args.store_checkpoins:
-        checkpoint_handler = CheckpointHandler(monitor_args, collab_optimizer_args, averager_args, dataset_args, dht)
+        checkpoint_handler = CheckpointHandler(monitor_args, training_args, collab_optimizer_args, averager_args, dht)
 
     while True:
         metrics_dict = dht.get(experiment_prefix + "_metrics", latest=True)

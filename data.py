@@ -107,7 +107,7 @@ class WrappedIterableDataset(torch.utils.data.IterableDataset):
         started = False
         logger.info("Pre-fetching training samples...")
         while True:
-            for sample in BackgroundGenerator(iter(self.hf_iterable), max_prefetch=8):
+            for sample in BackgroundGenerator(iter(self.hf_iterable), max_prefetch=64):
                 if not started:
                     logger.info("Began iterating minibatches!")
                     started = True
