@@ -172,7 +172,7 @@ def main(index: Optional[int] = None):
     adjusted_target_batch_size = collaboration_args.target_batch_size - collaboration_args.batch_size_lead
 
     averaging_compression = SizeAdaptiveCompression(
-        threshold=2 ** 16 + 1, less=Float16Compression(), greater_equal=Uniform8BitQuantization()),
+        threshold=2 ** 16 + 1, less=Float16Compression(), greater_equal=Uniform8BitQuantization())
 
     collaborative_optimizer = hivemind.CollaborativeOptimizer(
         opt=opt, dht=dht, scheduler=scheduler, prefix=collaboration_args.experiment_prefix,
