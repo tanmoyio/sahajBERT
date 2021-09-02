@@ -30,6 +30,7 @@ from data import make_lazy_wikioscar_dataset
 from data_collator import AlbertDataCollatorForWholeWordMask
 from arguments import CollaborationArguments, DatasetArguments, AlbertTrainingArguments, AveragerArguments
 import utils
+from huggingface_auth import authorize_with_huggingface
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ def main(index: Optional[int] = None):
     if index is not None:
         print(f"launched TPU with device index {index}")
     tpu = index is not None
-
+    authorizer = authorize_with_huggingface()
     parser = HfArgumentParser((AlbertTrainingArguments, DatasetArguments, CollaborationArguments, AveragerArguments))
     training_args, dataset_args, collaboration_args, averager_args = parser.parse_args_into_dataclasses()
 
@@ -158,6 +159,7 @@ def main(index: Optional[int] = None):
         announce_maddrs=collaboration_args.announce_maddrs,
         use_ipfs=collaboration_args.use_ipfs,
         record_validators=validators,
+        authorizer=authorizer
     )
 
     utils.log_visible_maddrs(dht.get_visible_maddrs(), only_p2p=collaboration_args.use_ipfs)

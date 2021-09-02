@@ -17,6 +17,8 @@ from arguments import BaseTrainingArguments, CollaborativeOptimizerArguments, Av
 from run_trainer import get_model, get_optimizer_and_scheduler
 from lib.models.config import LeanAlbertConfig
 
+from huggingface_auth import authorize_with_huggingface
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,7 @@ class TrainingMonitorArguments(BaseTrainingArguments):
         default=5, metadata={"help": "Frequency (in steps) of fetching and saving state from peers"}
     )
     model_config_path: str = field(
-        default="https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v2-config.json",
+        default="model.json",
         metadata={"help": "Path to the model config"},
     )
     repo_path: Optional[str] = field(
@@ -152,6 +154,7 @@ class CheckpointHandler:
 
 
 if __name__ == "__main__":
+    authorizer = authorize_with_huggingface()
     parser = HfArgumentParser(
         (TrainingMonitorArguments, AlbertTrainingArguments, CollaborativeOptimizerArguments, AveragerArguments))
     monitor_args, training_args, collab_optimizer_args, averager_args = parser.parse_args_into_dataclasses()
@@ -167,6 +170,7 @@ if __name__ == "__main__":
         host_maddrs=monitor_args.host_maddrs,
         announce_maddrs=monitor_args.announce_maddrs,
         identity_path=monitor_args.identity_path,
+        authorizer=authorizer
     )
     utils.log_visible_maddrs(dht.get_visible_maddrs(), only_p2p=monitor_args.use_ipfs)
 
