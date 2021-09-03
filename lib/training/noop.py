@@ -39,7 +39,10 @@ class IgnoreGradManipulations(nn.Module):
         return self.module.forward(*args, **kwargs)
 
     def zero_grad(self, set_to_none: bool = False) -> None:
-        logger.debug("Successfully bypassed zero_grad")
+        if all(param.grad.isfinite().all() for param in self.parameters()):
+            logger.debug("Successfully bypassed zero_grad")
+        else:
+            self.module.zero_grad()
 
     def clip_grad_norm_(self, *args, **kwargs):
         """ ignore clip_grad_norm on each step, clip in optimizer instead """
