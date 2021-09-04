@@ -13,7 +13,7 @@ from hivemind.utils.crypto import RSAPublicKey
 from hivemind.utils.logging import get_logger
 
 
-logger = get_logger(__name__)
+logger = get_logger("root." + __name__)
 
 
 class NonRetriableError(Exception):
