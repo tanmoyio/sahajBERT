@@ -10,6 +10,7 @@ import wandb
 from hivemind import Float16Compression, SizeAdaptiveCompression, Uniform8BitQuantization
 from hivemind.averaging.training import load_optimizer_state
 from transformers import HfArgumentParser, AlbertTokenizerFast
+from huggingface_hub import HfApi, HfFolder, Repository
 
 import hivemind
 import utils
@@ -41,8 +42,8 @@ class TrainingMonitorArguments(BaseTrainingArguments):
         default="model.json",
         metadata={"help": "Path to the model config"},
     )
-    repo_path: Optional[str] = field(
-        default=None, metadata={"help": "Path to local repository to store the model and optimizer states"}
+    local_path: Optional[str] = field(
+        default="Repo", metadata={"help": "Path to local repository to store the model and optimizer states"}
     )
     repo_url: Optional[str] = field(
         default=None, metadata={"help": "URL of Hugging Face Hub repository to upload the model and optimizer states"}
@@ -73,9 +74,15 @@ class CheckpointHandler:
         dht: hivemind.DHT,
     ):
         self.save_checkpoint_step_interval = monitor_args.save_checkpoint_step_interval
-        self.repo_path = monitor_args.repo_path
-        self.repo_url = monitor_args.repo_url
+        self.local_path = monitor_args.local_path
         self.upload_interval = monitor_args.upload_interval
+        if self.upload_interval is not None:
+            self.token = HfFolder.get_token()
+            self.repo = Repository(
+                local_dir = self.local_path,
+                clone_from = monitor_args.repo_url,
+                use_auth_token = self.token,
+            )
         self.previous_step = -1
 
         config = LeanAlbertConfig.from_pretrained(monitor_args.model_config_path)
@@ -133,7 +140,7 @@ class CheckpointHandler:
         self.previous_step = cur_step
 
     def is_time_to_upload(self):
-        if self.repo_path is None:
+        if self.upload_interval is None:
             return False
         elif time.time() - self.previous_timestamp >= self.upload_interval:
             return True
@@ -141,15 +148,13 @@ class CheckpointHandler:
             return False
 
     def upload_checkpoint(self, current_loss):
+        logger.info("Saving model")
+        self.model.save_pretrained(self.local_path)
         logger.info("Saving optimizer")
-        torch.save(self.collaborative_optimizer.opt.state_dict(), f"{self.repo_path}/optimizer_state.pt")
+        torch.save(self.collaborative_optimizer.opt.state_dict(), f"{self.local_path}/optimizer_state.pt")
         self.previous_timestamp = time.time()
         logger.info("Started uploading to Model Hub")
-        self.model.push_to_hub(
-            repo_name=self.repo_path,
-            repo_url=self.repo_url,
-            commit_message=f"Step {current_step}, loss {current_loss:.3f}",
-        )
+        self.repo.push_to_hub(commit_message=f"Step {current_step}, loss {current_loss:.3f}")
         logger.info("Finished uploading to Model Hub")
 
 
