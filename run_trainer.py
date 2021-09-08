@@ -122,7 +122,8 @@ class TrainerWithIndependentShuffling(Trainer):
         return super().get_train_dataloader()
 
     def _wrap_model(self, model, training=True):
-        return IgnoreGradManipulations(super()._wrap_model(model, training=training))
+        return IgnoreGradManipulations(super()._wrap_model(model, training=training),
+                                       override_clipping=True, override_zero_grad=False)
 
 
 def main(index: Optional[int] = None):
