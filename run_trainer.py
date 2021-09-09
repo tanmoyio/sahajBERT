@@ -122,8 +122,7 @@ class TrainerWithIndependentShuffling(Trainer):
         return super().get_train_dataloader()
 
     def _wrap_model(self, model, training=True):
-        return IgnoreGradManipulations(super()._wrap_model(model, training=training),
-                                       override_clipping=True, override_zero_grad=False)
+        return IgnoreGradManipulations(super()._wrap_model(model, training=training))
 
 
 def main(index: Optional[int] = None):
@@ -180,7 +179,7 @@ def main(index: Optional[int] = None):
         compression=averaging_compression, state_compression=Float16Compression(),
         batch_size_per_step=total_batch_size_per_step, bandwidth=collaboration_args.bandwidth,
         target_batch_size=adjusted_target_batch_size, client_mode=collaboration_args.client_mode,
-        reuse_grad_buffers=False, verbose=True, start=True, **asdict(averager_args),
+        reuse_grad_buffers=True, verbose=True, start=True, **asdict(averager_args),
     )
 
     collaborative_training_callback = callback.CollaborativeCallback(
