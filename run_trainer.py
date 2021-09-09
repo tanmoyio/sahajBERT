@@ -122,14 +122,10 @@ class TrainerWithIndependentShuffling(Trainer):
         return super().get_train_dataloader()
 
     def _wrap_model(self, model, training=True):
-        return IgnoreGradManipulations(super()._wrap_model(model, training=training),
-                                       override_clipping=True, override_zero_grad=False)
+        return IgnoreGradManipulations(super()._wrap_model(model, training=training))
 
 
-def main(index: Optional[int] = None):
-    if index is not None:
-        print(f"launched TPU with device index {index}")
-    tpu = index is not None
+def main():
     authorizer = authorize_with_huggingface()
     parser = HfArgumentParser((AlbertTrainingArguments, DatasetArguments, CollaborationArguments, AveragerArguments))
     training_args, dataset_args, collaboration_args, averager_args = parser.parse_args_into_dataclasses()
@@ -147,8 +143,6 @@ def main(index: Optional[int] = None):
     tokenizer = AlbertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
     model = get_model(training_args, config, tokenizer)
     model.to(training_args.device)
-    if tpu:
-        model.tie_weights()
 
     opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
@@ -180,7 +174,7 @@ def main(index: Optional[int] = None):
         compression=averaging_compression, state_compression=Float16Compression(),
         batch_size_per_step=total_batch_size_per_step, bandwidth=collaboration_args.bandwidth,
         target_batch_size=adjusted_target_batch_size, client_mode=collaboration_args.client_mode,
-        reuse_grad_buffers=False, verbose=True, start=True, **asdict(averager_args),
+        reuse_grad_buffers=True, verbose=True, start=True, **asdict(averager_args),
     )
 
     collaborative_training_callback = callback.CollaborativeCallback(
