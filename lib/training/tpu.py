@@ -16,6 +16,7 @@ import torch_xla.distributed.parallel_loader as pl
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class TPUManager(mp.Process):
@@ -43,8 +44,7 @@ class TPUManager(mp.Process):
         # shared fields for communicating statistics after each step
         self.should_load_parameters = mp.Value(ctypes.c_bool, False)
         self.gradients_accumulated = mp.Value(ctypes.c_long, 0)
-        self.loss_numerator = mp.Value(ctypes.c_double, 0)
-        self.loss_denominator = mp.Value(ctypes.c_double, 0)
+        self.loss_accumulated = mp.Value(ctypes.c_double, 0)
         if start:
             self.start()
 
@@ -53,29 +53,28 @@ class TPUManager(mp.Process):
 
     def update_model_parameters(self, new_host_parameters):
         """Schedule TPUs to update model parameters during at the beginning of the next step"""
-        with self.lock:
+        with self.lock, torch.no_grad():
             self._synchronizer.set_host_parameters(new_host_parameters)
             self.should_load_parameters.value = True
 
     def get_accumulated_gradients(self):
         """Get current accumulated gradients from the master model"""
-        with self.lock:
-            return [param.grad for param in self._synchronizer.master_model.parameters()]
+        with self.lock, torch.no_grad():
+            return self._synchronizer.get_accumulated_gradients()
 
     def zero_grad(self):
         """Reset master accumulated gradients to zeros"""
-        with self.lock:
+        with self.lock, torch.no_grad():
             for param in self._synchronizer.master_model.parameters():
                 param.grad.zero_()
 
     def step(self):
         """run forward/backward step with all TPUs, collect gradients"""
-        self.loss_numerator.value = self.loss_denominator.value = self.gradients_accumulated.value = 0
-
+        self.loss_accumulated.value = self.gradients_accumulated.value = 0
         self.step_finished.clear()
         self.step_triggered.set()
         self.step_finished.wait()
-        return self.loss_numerator.value / self.loss_denominator.value, self.gradients_accumulated.value
+        return self.loss_accumulated.value, self.gradients_accumulated.value
 
     def runner(self, tpu_index):
         """Run training steps from the perspective of a single TPU core"""
@@ -95,7 +94,7 @@ class TPUManager(mp.Process):
                 data_loader = self._data_manager.get_device_dataloader(
                     batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
                 data_loader_iter = iter(data_loader)
-                logging.info(f"Process {tpu_index} initialized.")
+                logger.info(f"Process {tpu_index} initialized.")
 
         xm.rendezvous('init_finished')
 
@@ -133,8 +132,7 @@ class TPUManager(mp.Process):
 
     def _mark_step_finished(self, loss):
         self.gradients_accumulated.value += self.batch_size * self.nprocs * self.grad_accumulation_steps
-        self.loss_numerator.value += float(loss)
-        self.loss_denominator.value += 1
+        self.loss_accumulated.value = float(loss)
         self.step_finished.set()
 
 
@@ -159,7 +157,7 @@ class TPUSynchronizer:
     def set_host_parameters(self, new_host_parameters):
         return self._assign(source=self.master_model.parameters(), target=new_host_parameters, add=False, strict=True)
 
-    def get_aggregated_gradients(self):
+    def get_accumulated_gradients(self):
         return [param.grad for param in self.master_model.parameters()]
 
     def send_params_to_device(self, replica: nn.Module):
