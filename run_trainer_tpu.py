@@ -103,12 +103,12 @@ def main():
 
     utils.log_visible_maddrs(dht.get_visible_maddrs(), only_p2p=collaboration_args.use_ipfs)
 
-    total_batch_size_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
+    total_batch_size_per_step = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps * N_TPUS
     if torch.cuda.device_count() != 0:
         total_batch_size_per_step *= torch.cuda.device_count()
 
     statistics_expiration = collaboration_args.statistics_expiration
-    adjusted_target_batch_size = collaboration_args.target_batch_size - collaboration_args.batch_size_lead * N_TPUS
+    adjusted_target_batch_size = collaboration_args.target_batch_size - collaboration_args.batch_size_lead
 
     averaging_compression = SizeAdaptiveCompression(
         threshold=2 ** 16 + 1, less=Float16Compression(), greater_equal=Uniform8BitQuantization())
