@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import time
+import random
 from copy import deepcopy
 import multiprocessing as mp
 
@@ -9,6 +10,10 @@ from lib.training.tpu import TPUManager
 from run_trainer import *
 
 N_TPUS = 8
+
+import transformers.training_args
+
+transformers.training_args.is_torch_tpu_available = lambda: False  # disable builtin TPU support to use custom code
 
 
 class TrackableColaborativeOptimizer(CollaborativeOptimizer):
@@ -21,6 +26,7 @@ class TrackableColaborativeOptimizer(CollaborativeOptimizer):
 def main():
     authorizer = authorize_with_huggingface()
     parser = HfArgumentParser((AlbertTrainingArguments, DatasetArguments, CollaborationArguments, AveragerArguments))
+
     training_args, dataset_args, collaboration_args, averager_args = parser.parse_args_into_dataclasses()
 
     logger.info(f"Found {len(collaboration_args.initial_peers)} initial peers: {collaboration_args.initial_peers}")
@@ -34,7 +40,35 @@ def main():
 
     config = LeanAlbertConfig.from_pretrained(dataset_args.config_path, cache_dir=dataset_args.cache_dir)
     tokenizer = AlbertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
+
     model = get_model(training_args, config, tokenizer)
+
+    # TODO!!!!!!!!!!!!!!!!!!!!!!!!!
+    assert training_args.do_train and not training_args.do_eval
+    training_dataset = make_lazy_wikioscar_dataset(tokenizer, shuffle_seed=hash(random.random()) % 2 ** 31)
+
+    # This data collator will take care of randomly masking the tokens.
+    data_collator = AlbertDataCollatorForWholeWordMask(
+        tokenizer=tokenizer, pad_to_multiple_of=training_args.pad_to_multiple_of)
+
+    tpu_manager = TPUManager(deepcopy(model), dataset=training_dataset, collate_fn=data_collator,
+                             batch_size=training_args.per_device_train_batch_size,
+                             grad_accumulation_steps=training_args.gradient_accumulation_steps,
+                             nprocs=N_TPUS, start=True)
+
+    # warmup tpus
+    logger.info("Waiting for TPUs to warm up, this may take a minute...")
+    tpu_manager.step()
+    logger.info("Warmup step 1 / 3 done.")
+    tpu_manager.update_model_parameters(model.parameters())
+    tpu_manager.step()
+    logger.info("Warmup step 2 / 3 done.")
+    tpu_manager.step()
+    tpu_manager.get_aggregated_gradients()
+    tpu_manager.zero_grad()
+    logger.info("Warmup step 3 / 3 done.")
+    # TODO!!!!!!!!!!!!!!!!!!!!!!!!!
+
     opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
     validators, local_public_key = utils.make_validators(collaboration_args.experiment_prefix)
@@ -71,30 +105,6 @@ def main():
     collaborative_training_callback = callback.CollaborativeCallback(
         dht, collaborative_optimizer, model, local_public_key, statistics_expiration
     )
-
-    assert training_args.do_train and not training_args.do_eval
-    training_dataset = make_lazy_wikioscar_dataset(tokenizer, shuffle_seed=hash(local_public_key) % 2 ** 31)
-
-    # This data collator will take care of randomly masking the tokens.
-    data_collator = AlbertDataCollatorForWholeWordMask(
-        tokenizer=tokenizer, pad_to_multiple_of=training_args.pad_to_multiple_of)
-
-    tpu_manager = TPUManager(deepcopy(model), dataset=training_dataset, collate_fn=data_collator,
-                             batch_size=training_args.per_device_train_batch_size,
-                             grad_accumulation_steps=training_args.gradient_accumulation_steps,
-                             nprocs=N_TPUS, start=True)
-
-    # warmup tpus
-    logger.info("Waiting for TPUs to warm up, this may take a minute...")
-    tpu_manager.step()
-    logger.info("Warmup step 1 / 3 done.")
-    tpu_manager.update_model_parameters(model.parameters())
-    tpu_manager.step()
-    logger.info("Warmup step 2 / 3 done.")
-    tpu_manager.step()
-    tpu_manager.get_aggregated_gradients()
-    tpu_manager.zero_grad()
-    logger.info("Warmup step 3 / 3 done.")
 
     collaborative_training_callback.on_train_begin(training_args, None, None)
     tpu_manager.update_model_parameters(model.parameters())
