@@ -57,10 +57,10 @@ class TPUManager(mp.Process):
             self._synchronizer.set_host_parameters(new_host_parameters)
             self.should_load_parameters.value = True
 
-    def get_accumulated_gradients(self):
+    def get_aggregated_gradients(self):
         """Get current accumulated gradients from the master model"""
         with self.lock, torch.no_grad():
-            return self._synchronizer.get_accumulated_gradients()
+            return self._synchronizer.get_aggregated_gradients()
 
     def zero_grad(self):
         """Reset master accumulated gradients to zeros"""
@@ -131,7 +131,7 @@ class TPUManager(mp.Process):
             xm.do_on_ordinals(self._mark_step_finished, data=(loss,), ordinals=(0,))
 
     def _mark_step_finished(self, loss):
-        self.gradients_accumulated.value += self.batch_size * self.nprocs * self.grad_accumulation_steps
+        self.gradients_accumulated.value = self.batch_size * self.nprocs * self.grad_accumulation_steps
         self.loss_accumulated.value = float(loss)
         self.step_finished.set()
 
@@ -157,7 +157,7 @@ class TPUSynchronizer:
     def set_host_parameters(self, new_host_parameters):
         return self._assign(source=self.master_model.parameters(), target=new_host_parameters, add=False, strict=True)
 
-    def get_accumulated_gradients(self):
+    def get_aggregated_gradients(self):
         return [param.grad for param in self.master_model.parameters()]
 
     def send_params_to_device(self, replica: nn.Module):

@@ -125,10 +125,7 @@ class TrainerWithIndependentShuffling(Trainer):
         return IgnoreGradManipulations(super()._wrap_model(model, training=training))
 
 
-def main(index: Optional[int] = None):
-    if index is not None:
-        print(f"launched TPU with device index {index}")
-    tpu = index is not None
+def main():
     authorizer = authorize_with_huggingface()
     parser = HfArgumentParser((AlbertTrainingArguments, DatasetArguments, CollaborationArguments, AveragerArguments))
     training_args, dataset_args, collaboration_args, averager_args = parser.parse_args_into_dataclasses()
@@ -146,8 +143,6 @@ def main(index: Optional[int] = None):
     tokenizer = AlbertTokenizerFast.from_pretrained(dataset_args.tokenizer_path, cache_dir=dataset_args.cache_dir)
     model = get_model(training_args, config, tokenizer)
     model.to(training_args.device)
-    if tpu:
-        model.tie_weights()
 
     opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
