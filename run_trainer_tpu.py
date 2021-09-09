@@ -87,23 +87,25 @@ def main():
     # warmup tpus
     logger.info("Waiting for TPUs to warm up, this may take a minute...")
     tpu_manager.step()
-    print("Warmup step 1 / 3 done.")
+    logger.info("Warmup step 1 / 3 done.")
     tpu_manager.update_model_parameters(model.parameters())
     tpu_manager.step()
-    print("Warmup step 2 / 3 done.")
+    logger.info("Warmup step 2 / 3 done.")
     tpu_manager.step()
     tpu_manager.get_aggregated_gradients()
     tpu_manager.zero_grad()
-    print("Warmup step 3 / 3 done.")
+    logger.info("Warmup step 3 / 3 done.")
 
     collaborative_training_callback.on_train_begin(training_args, None, None)
     tpu_manager.update_model_parameters(model.parameters())
+
+    state = transformers.TrainerState()
 
     while True:
         start_time = time.perf_counter()
         loss, num_accumulated = tpu_manager.step()
         time_delta = time.perf_counter() - start_time
-        print(end=f"Accumulated {num_accumulated} gradients at {num_accumulated / time_delta:.3f} g/s\n", flush=True)
+        logger.info(end=f"Accumulated {num_accumulated} gradients at {num_accumulated / time_delta:.3f} g/s\n")
 
         with torch.no_grad():
             for param, grad_from_tpu in zip(model.parameters(), tpu_manager.get_aggregated_gradients()):
@@ -112,11 +114,12 @@ def main():
             collaborative_optimizer.step()
 
             if collaborative_optimizer.should_load_params.is_set():
-                print("Loading params onto tpu.")
+                logger.info("Loading params onto TPU.")
                 tpu_manager.update_model_parameters(model.parameters())
                 collaborative_optimizer.should_load_params.clear()
 
-        collaborative_training_callback.on_step_end(training_args, TODOADDLOGS, None)
+        state.log_history.append(dict(loss=loss))
+        collaborative_training_callback.on_step_end(training_args, state, None)
 
 
 if __name__ == "__main__":
