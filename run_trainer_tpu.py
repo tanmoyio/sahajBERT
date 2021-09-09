@@ -3,9 +3,11 @@ import time
 import random
 from copy import deepcopy
 import multiprocessing as mp
+from typing import Any
 
 from hivemind import CollaborativeOptimizer
 
+from callback import CollaborativeCallback
 from lib.training.tpu import TPUManager
 from run_trainer import *
 
@@ -17,10 +19,26 @@ transformers.training_args.is_torch_tpu_available = lambda: False  # disable bui
 
 
 class TrackableColaborativeOptimizer(CollaborativeOptimizer):
-    should_load_params = mp.Event()
+    def __init__(self, *args, tpu_manager, model, **kwargs):
+      super().__init__(*args, **kwargs)
+      self._tpu_manager, self._model = tpu_manager, model
 
     def reset_accumulated_grads_(self):
-        self.should_load_params.set()
+        self._tpu_manager.zero_grad()
+        out = super().reset_accumulated_grads_()
+        self._tpu_manager.update_model_parameters(self._model.parameters())
+        logger.info("Pushed new params onto TPU.")
+        return out
+
+
+class SimpleCollaborativeCallback(CollaborativeCallback):
+    @torch.no_grad()
+    def backup_state(self) -> Any:
+        return None
+
+    @torch.no_grad()
+    def restore_from_backup(self, backup):
+        raise NotImplementedError("TPU can't load backup because Yozh is an idiot.")
 
 
 def main():
@@ -43,7 +61,7 @@ def main():
 
     model = get_model(training_args, config, tokenizer)
 
-    # TODO!!!!!!!!!!!!!!!!!!!!!!!!!
+    # BEGIN init TPU
     assert training_args.do_train and not training_args.do_eval
     training_dataset = make_lazy_wikioscar_dataset(tokenizer, shuffle_seed=hash(random.random()) % 2 ** 31)
 
@@ -51,10 +69,13 @@ def main():
     data_collator = AlbertDataCollatorForWholeWordMask(
         tokenizer=tokenizer, pad_to_multiple_of=training_args.pad_to_multiple_of)
 
-    tpu_manager = TPUManager(deepcopy(model), dataset=training_dataset, collate_fn=data_collator,
+    tpu_manager = TPUManager(model, dataset=training_dataset, collate_fn=data_collator,
                              batch_size=training_args.per_device_train_batch_size,
                              grad_accumulation_steps=training_args.gradient_accumulation_steps,
                              nprocs=N_TPUS, start=True)
+
+    model = tpu_manager._synchronizer.master_model
+    opt, scheduler = get_optimizer_and_scheduler(training_args, model)
 
     # warmup tpus
     logger.info("Waiting for TPUs to warm up, this may take a minute...")
@@ -67,9 +88,7 @@ def main():
     tpu_manager.get_aggregated_gradients()
     tpu_manager.zero_grad()
     logger.info("Warmup step 3 / 3 done.")
-    # TODO!!!!!!!!!!!!!!!!!!!!!!!!!
-
-    opt, scheduler = get_optimizer_and_scheduler(training_args, model)
+    # END init TPU
 
     validators, local_public_key = utils.make_validators(collaboration_args.experiment_prefix)
     dht = hivemind.DHT(
@@ -99,37 +118,31 @@ def main():
         compression=averaging_compression, state_compression=Float16Compression(),
         batch_size_per_step=total_batch_size_per_step, bandwidth=collaboration_args.bandwidth,
         target_batch_size=adjusted_target_batch_size, client_mode=collaboration_args.client_mode,
-        reuse_grad_buffers=True, verbose=True, start=True, **asdict(averager_args),
+        reuse_grad_buffers=True, verbose=True, start=True, tpu_manager=tpu_manager, model=model, **asdict(averager_args)
     )
 
-    collaborative_training_callback = callback.CollaborativeCallback(
+    collaborative_training_callback = SimpleCollaborativeCallback(
         dht, collaborative_optimizer, model, local_public_key, statistics_expiration
     )
 
-    collaborative_training_callback.on_train_begin(training_args, None, None)
-    tpu_manager.update_model_parameters(model.parameters())
-
     state = transformers.TrainerState()
+    control = transformers.TrainerControl()
+    collaborative_training_callback.on_train_begin(training_args, state, control)
+    tpu_manager.update_model_parameters(model.parameters())
 
     while True:
         start_time = time.perf_counter()
         loss, num_accumulated = tpu_manager.step()
         time_delta = time.perf_counter() - start_time
-        logger.info(end=f"Accumulated {num_accumulated} gradients at {num_accumulated / time_delta:.3f} g/s\n")
+        logger.info(f"Accumulated {num_accumulated} gradients at {num_accumulated / time_delta:.3f} g/s")
 
         with torch.no_grad():
             for param, grad_from_tpu in zip(model.parameters(), tpu_manager.get_aggregated_gradients()):
-                param.grad.copy_(grad_from_tpu)
-            tpu_manager.zero_grad()
+                param.grad[...] = grad_from_tpu
             collaborative_optimizer.step()
 
-            if collaborative_optimizer.should_load_params.is_set():
-                logger.info("Loading params onto TPU.")
-                tpu_manager.update_model_parameters(model.parameters())
-                collaborative_optimizer.should_load_params.clear()
-
         state.log_history.append(dict(loss=loss))
-        collaborative_training_callback.on_step_end(training_args, state, None)
+        collaborative_training_callback.on_step_end(training_args, state, control)
 
 
 if __name__ == "__main__":
