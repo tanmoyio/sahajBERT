@@ -1,7 +1,9 @@
 import ctypes
+import logging
+import threading
+from contextlib import nullcontext
 from copy import deepcopy
 import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
 from itertools import zip_longest
 from typing import Iterable
 
@@ -11,6 +13,9 @@ import torch.utils.data
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
+
+
+logger = logging.getLogger(__name__)
 
 
 class TPUManager(mp.Process):
@@ -28,25 +33,12 @@ class TPUManager(mp.Process):
                  seed_base: int = 42,
                  start: bool):
         super().__init__()
-        self.seed_base = seed_base
-        self.nprocs, self.prefetch = nprocs, prefetch
+        self.lock = mp.Lock()
+        self.nprocs, self.prefetch, self.seed_base = nprocs, prefetch, seed_base
+        self.batch_size, self.grad_accumulation_steps, self.collate_fn = batch_size, grad_accumulation_steps, collate_fn
         self.step_triggered, self.step_finished = mp.Event(), mp.Event()
         self._synchronizer = TPUSynchronizer(model)
-
-        # set up centralized data loader in background
-        self._batcher_thread_pool = ThreadPoolExecutor()
-        self._dataset, self._collate_fn = dataset, collate_fn
-        self.batch_size, self.grad_accumulation_steps = batch_size, grad_accumulation_steps
-        self.minibatch_queues = [mp.Queue(self.prefetch) for _ in range(nprocs)]
-
-        def _thread_method():
-            try:
-                for i, batch in enumerate(self._dataset):
-                    self.minibatch_queues[i % self.nprocs].put(batch)
-            finally:
-                print("Minibatch generator finished.")
-
-        self._batcher_thread_pool.submit(_thread_method)
+        self._data_manager = TPUDataManager(dataset, nprocs, prefetch)
 
         # shared statistics
         self.should_load_parameters = mp.Value(ctypes.c_bool, False)
@@ -61,10 +53,20 @@ class TPUManager(mp.Process):
 
     def update_model_parameters(self, new_host_parameters):
         """Schedule TPUs to update model parameters during at the beginning of the next step"""
-        self.should_load_parameters.value = True
+        with self.lock:
+            self._synchronizer.set_host_parameters(new_host_parameters)
+            self.should_load_parameters.value = True
 
     def get_accumulated_gradients(self):
-        return [param.grad for param in self._synchronizer.master_model.parameters()]
+        """Get current accumulated gradients from the master model"""
+        with self.lock:
+            return [param.grad for param in self._synchronizer.master_model.parameters()]
+
+    def zero_grad(self):
+        """Reset master accumulated gradients to zeros"""
+        with self.lock:
+            for param in self._synchronizer.master_model.parameters():
+                param.grad.zero_()
 
     def step(self):
         """run forward/backward step with all TPUs, collect gradients"""
@@ -80,7 +82,7 @@ class TPUManager(mp.Process):
 
         # acquire the (unique) Cloud TPU core corresponding to this process's index
         device = xm.xla_device()
-        print("Process", tpu_index, "is using", xm.xla_real_devices([str(device)])[0])
+        logger.info(f"Process {tpu_index} is using {xm.xla_real_devices([str(device)])[0]}")
 
         # set random seed for
         torch.manual_seed(self.seed_base + tpu_index)
@@ -90,15 +92,10 @@ class TPUManager(mp.Process):
             xm.rendezvous(f'init_{init_index}')
             if tpu_index == init_index:
                 model = self._synchronizer.get_device_model_replica(device)
-                parameters = [param for param in model.parameters()]
-
-                data_loader = torch.utils.data.DataLoader(
-                    QueueDataset(self.minibatch_queues[tpu_index]),
-                    batch_size=self.batch_size, collate_fn=self._collate_fn,
-                    num_workers=0, pin_memory=False)
-                data_loader = pl.ParallelLoader(data_loader, [device]).per_device_loader(device)
+                data_loader = self._data_manager.get_device_dataloader(
+                    batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
                 data_loader_iter = iter(data_loader)
-                print(f"Process {tpu_index} initialized.")
+                logging.info(f"Process {tpu_index} initialized.")
 
         xm.rendezvous('init_finished')
 
@@ -109,7 +106,8 @@ class TPUManager(mp.Process):
                 self.step_triggered.clear()
 
             if bool(self.should_load_parameters.value):
-                self._synchronizer.send_params_to_device(model)
+                with self.lock if xm.is_master_ordinal() else nullcontext():
+                    self._synchronizer.send_params_to_device(model)
 
             ### compute loss and gradients
             loss = 0.0
@@ -123,7 +121,8 @@ class TPUManager(mp.Process):
                 del inputs, outputs, loss_i
 
             ### aggregate gradients from TPUs
-            self._synchronizer.aggregate_grads_on_host(model, add=True)
+            with self.lock if xm.is_master_ordinal() else nullcontext():
+                self._synchronizer.aggregate_grads_on_host(model, add=True)
             # clear aggregated gradients from all devices
             model.zero_grad()
 
@@ -136,17 +135,6 @@ class TPUManager(mp.Process):
         self.loss_numerator.value += float(loss)
         self.loss_denominator.value += 1
         self.step_finished.set()
-
-
-class QueueDataset(torch.utils.data.IterableDataset):
-    """A dataset that ceaselessly iterates over a queue"""
-    def __init__(self, queue: mp.Queue):
-        super().__init__()
-        self.queue = queue
-
-    def __iter__(self):
-        while True:
-            yield self.queue.get()
 
 
 class TPUSynchronizer:
@@ -188,7 +176,7 @@ class TPUSynchronizer:
             replica_grads = [param.grad for param in replica.parameters()]
             replica_grads = xm.all_reduce(xm.REDUCE_SUM, replica_grads, scale=1.0)
             master_grads = [hp.grad for hp in self.master_model.parameters()]
-            xm.do_on_ordinals(lambda replica_grads: self._assign(source=replica_grads, target=master_grads, add=add),
+            xm.do_on_ordinals(lambda *replica_grads: self._assign(source=replica_grads, target=master_grads, add=add),
                               data=tuple(replica_grads), ordinals=(0,))
             # ^-- do_on_ordinals already runs rendezvous at the end
 
@@ -203,3 +191,34 @@ class TPUSynchronizer:
                 target_tensor.add_(source_tensor)
             else:
                 target_tensor.copy_(source_tensor)
+
+
+class TPUDataManager:
+    """An auxiliary class that loads centralized dataset from master into multiple TPU devices"""
+    def __init__(self, dataset: torch.utils.data.Dataset, nprocs: int, master_prefetch: int = 16):
+        self.dataset, self.nprocs = dataset, nprocs
+        self.device_queues = [mp.Queue(master_prefetch) for _ in range(nprocs)]
+        self._loader_thread = threading.Thread(target=self._load_data_into_queues)
+        self._loader_thread.start()
+
+    def _load_data_into_queues(self):
+        try:
+            for i, batch in enumerate(self.dataset):
+                self.device_queues[i % self.nprocs].put(batch)
+        finally:
+            logger.warning("Minibatch generator finished.")
+
+    def get_device_dataloader(self, **kwargs):
+        data_loader = torch.utils.data.DataLoader(QueueDataset(self.device_queues[xm.get_ordinal()]), **kwargs)
+        return pl.ParallelLoader(data_loader, [xm.xla_device()]).per_device_loader(xm.xla_device())
+
+
+class QueueDataset(torch.utils.data.IterableDataset):
+    """A dataset that ceaselessly iterates over a queue"""
+    def __init__(self, queue: mp.Queue):
+        super().__init__()
+        self.queue = queue
+
+    def __iter__(self):
+        while True:
+            yield self.queue.get()
