@@ -5,7 +5,6 @@ import torch
 from hivemind import CollaborativeOptimizer, TrainingAverager
 
 import torch_xla.core.xla_model as xm
-
 from lib.training.conduit import DeviceConduit
 
 
