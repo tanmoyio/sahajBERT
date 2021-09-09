@@ -25,7 +25,7 @@ class TPUManager(mp.Process):
                  model,
                  dataset,
                  *,
-                 collate_fn=None,
+                 collate_fn: callable = None,
                  nprocs: int = 8,
                  prefetch: int = 16,
                  batch_size: int = 1,
@@ -40,7 +40,7 @@ class TPUManager(mp.Process):
         self._synchronizer = TPUSynchronizer(model)
         self._data_manager = TPUDataManager(dataset, nprocs, prefetch)
 
-        # shared statistics
+        # shared fields for communicating statistics after each step
         self.should_load_parameters = mp.Value(ctypes.c_bool, False)
         self.gradients_accumulated = mp.Value(ctypes.c_long, 0)
         self.loss_numerator = mp.Value(ctypes.c_double, 0)
@@ -108,6 +108,7 @@ class TPUManager(mp.Process):
             if bool(self.should_load_parameters.value):
                 with self.lock if xm.is_master_ordinal() else nullcontext():
                     self._synchronizer.send_params_to_device(model)
+                    self.should_load_parameters.value = False
 
             ### compute loss and gradients
             loss = 0.0
