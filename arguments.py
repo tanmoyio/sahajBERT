@@ -91,7 +91,7 @@ class CollaborativeOptimizerArguments:
 @dataclass
 class CollaborationArguments(CollaborativeOptimizerArguments, BaseTrainingArguments):
     statistics_expiration: float = field(
-        default=600, metadata={"help": "Statistics will be removed if not updated in this many seconds"}
+        default=120, metadata={"help": "Statistics will be removed if not updated in this many seconds"}
     )
     backup_every_steps: int = field(
         default=10, metadata={"help": "In case of NaN, fallback to a backup saved once in this many global steps"}
