@@ -1,5 +1,4 @@
 import ctypes
-import logging
 import threading
 from contextlib import nullcontext
 from copy import deepcopy
@@ -14,9 +13,10 @@ import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 
+from hivemind.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+
+logger = get_logger(__name__)
 
 
 class TPUManager(mp.Process):
