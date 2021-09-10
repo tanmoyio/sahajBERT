@@ -98,40 +98,27 @@ class TPUManager(mp.Process):
         xm.rendezvous('init_finished')
 
         while True:
-            print('0')
             self.step_triggered.wait()
             xm.rendezvous('before_step')
-            print('1')
+
             if xm.is_master_ordinal():
                 self.step_triggered.clear()
-
-            print('2')
 
             if bool(self.should_load_parameters.value):
                 with self.lock if xm.is_master_ordinal() else nullcontext():
                     self._synchronizer.send_params_to_device(model)
                     self.should_load_parameters.value = False
 
-            print('3')
-
             ### compute loss and gradients
             loss = 0.0
             for i in range(self.grad_accumulation_steps):
-                print('3a')
                 inputs = next(data_loader_iter)
-                print('3b')
                 outputs = model(**inputs)
-                print('3c')
                 loss_i = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
-                print('3d')
                 loss_i = loss_i / (self.grad_accumulation_steps * self.nprocs)
-                print('3e')
                 loss_i.backward()
-                print('3f')
                 loss += loss_i
-                print('3g')
                 del inputs, outputs, loss_i
-                print('3h')
                 
             print('4')
 
@@ -193,22 +180,31 @@ class TPUSynchronizer:
     def aggregate_grads_on_host(self, replica: nn.Module, *, add: bool):
         """Aggregate grads from all tpu devices and move them to host"""
         with torch.no_grad():
+            print('--A')
             replica_grads = [param.grad for param in replica.parameters()]
+            print('--B')
             replica_grads = xm.all_reduce(xm.REDUCE_SUM, replica_grads, scale=1.0)
+            print('--C')
             master_grads = [hp.grad for hp in self.master_model.parameters()]
+            print('--D')
             xm.do_on_ordinals(lambda *replica_grads: self._assign(source=replica_grads, target=master_grads, add=add),
                               data=tuple(replica_grads), ordinals=(0,))
+            print('--E')
             # ^-- do_on_ordinals already runs rendezvous at the end
 
     def _assign(self, source: Iterable[torch.Tensor], target: Iterable[torch.Tensor], add: bool, strict: bool = False):
+        print('--D2')
         for source_tensor, target_tensor in zip_longest(source, target):
+            print('--D3')
             assert source_tensor is not None or target_tensor is not None, "Source and target length must match exactly"
             if strict:
                 assert source_tensor.shape == target_tensor.shape
                 assert source_tensor.device == target_tensor.device
                 assert source_tensor.dtype == target_tensor.dtype
             if add:
+                print('--D4')
                 target_tensor.add_(source_tensor)
+                print('--D5')
             else:
                 target_tensor.copy_(source_tensor)
 
