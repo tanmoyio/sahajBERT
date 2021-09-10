@@ -221,3 +221,6 @@ class QueueDataset(torch.utils.data.IterableDataset):
     def __iter__(self):
         while True:
             yield self.queue.get()
+
+    def __len__(self):
+        return float('inf')
