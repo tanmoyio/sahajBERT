@@ -221,3 +221,6 @@ class QueueDataset(torch.utils.data.IterableDataset):
     def __iter__(self):
         while True:
             yield self.queue.get()
+
+    def __len__(self):
+        return 10 ** 12  # TODO deprecate this when the issue is resolved: https://github.com/googlecolab/colabtools/issues/2237
