@@ -98,15 +98,21 @@ class TPUManager(mp.Process):
         xm.rendezvous('init_finished')
 
         while True:
+            print('0')
             self.step_triggered.wait()
             xm.rendezvous('before_step')
+            print('1')
             if xm.is_master_ordinal():
                 self.step_triggered.clear()
+
+            print('2')
 
             if bool(self.should_load_parameters.value):
                 with self.lock if xm.is_master_ordinal() else nullcontext():
                     self._synchronizer.send_params_to_device(model)
                     self.should_load_parameters.value = False
+
+            print('3')
 
             ### compute loss and gradients
             loss = 0.0
@@ -119,15 +125,22 @@ class TPUManager(mp.Process):
                 loss += loss_i
                 del inputs, outputs, loss_i
 
+            print('4')
+
             ### aggregate gradients from TPUs
             with self.lock if xm.is_master_ordinal() else nullcontext():
                 self._synchronizer.aggregate_grads_on_host(model, add=True)
+
+            print('5')
             # clear aggregated gradients from all devices
             model.zero_grad()
+
+            print('6')
 
             ### accumulate statistics to host
             loss = xm.all_reduce(xm.REDUCE_SUM, loss, scale=1.0)
             xm.do_on_ordinals(self._mark_step_finished, data=(loss,), ordinals=(0,))
+            print('7')
 
     def _mark_step_finished(self, loss):
         self.gradients_accumulated.value = self.batch_size * self.nprocs * self.grad_accumulation_steps
