@@ -42,14 +42,24 @@ def get_auxiliary_tensors(seq_len: int, dim: int, dtype: torch.dtype, device: to
     Compute auxiliary sine and cosine tensors for rotary position embedding
     :returns: a tuple of (cos, sin) tensors of shape [seq_len, hid_size]
     """
+    print('?-1')
     _buf = torch.linspace(0, -1 + 2 / dim, dim // 2, dtype=torch.float32, device=device)
+    print('?-2')
     inv_freq = torch.pow(base, _buf, out=_buf).repeat(2)
+    print('?-3')
     time_ix = torch.arange(seq_len, dtype=inv_freq.dtype, device=device)
+    print('?-4')
 
     freqs = (time_ix[:, None] * inv_freq[None, :])
+    print('?-5')
     cos = torch.cos(freqs)
+    print('?-6')
     sin = torch.sin(freqs, out=freqs)
-    return cos.to(dtype), sin.to(dtype)
+    print('?-7')
+    try:
+        return cos.to(dtype), sin.to(dtype)
+    finally:
+        print('?-8')
 
 
 def rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
