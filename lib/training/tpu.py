@@ -117,14 +117,22 @@ class TPUManager(mp.Process):
             ### compute loss and gradients
             loss = 0.0
             for i in range(self.grad_accumulation_steps):
+                print('3a')
                 inputs = next(data_loader_iter)
+                print('3b')
                 outputs = model(**inputs)
+                print('3c')
                 loss_i = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+                print('3d')
                 loss_i = loss_i / (self.grad_accumulation_steps * self.nprocs)
+                print('3e')
                 loss_i.backward()
+                print('3f')
                 loss += loss_i
+                print('3g')
                 del inputs, outputs, loss_i
-
+                print('3h')
+                
             print('4')
 
             ### aggregate gradients from TPUs
