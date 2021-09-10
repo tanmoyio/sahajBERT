@@ -49,6 +49,8 @@ class TPUManager(mp.Process):
             self.start()
 
     def run(self):
+        import threading
+        from functools import partial
         thread = threading.Thread(
             target=partial(xmp.spawn, self.runner, nprocs=self.nprocs, start_method='fork'),
             daemon=True)
