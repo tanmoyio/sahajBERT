@@ -84,7 +84,6 @@ class TPUManager(mp.Process):
     def runner(self, tpu_index):
         """Run training steps from the perspective of a single TPU core"""
         # acquire the (unique) Cloud TPU core corresponding to this process's index
-
         device = xm.xla_device()
         logger.info(f"Process {tpu_index} is using {xm.xla_real_devices([str(device)])[0]}")
 
