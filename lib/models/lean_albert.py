@@ -129,12 +129,8 @@ class LeanAlbertLayer(nn.Module):
                            layer_norm_eps=config.layer_norm_eps, dropout=config.hidden_dropout_prob)
 
     def forward(self, hidden_states, attention_mask=None, output_attentions=False):
-        print('pre-ATTN')
         attention_output, *extras = self.attention(hidden_states, attention_mask, output_attentions)
-        print('post-ATTN')
-        print('pre-FFN')
         ffn_output = self.ffn(attention_output)
-        print('post-FFN')
         return (ffn_output, attention_output, *extras)
 
 
@@ -188,16 +184,13 @@ class LeanAlbertTransformer(AlbertTransformer):
         output_hidden_states=False,
         return_dict=True,
     ):
-        print('---1')
         #TODO this should entire be replaced with inheritance and post_layer_norm
         hidden_states = self.embedding_hidden_mapping_in(hidden_states)
 
         all_hidden_states = (hidden_states,) if output_hidden_states else None
         all_attentions = () if output_attentions else None
-        print('---2')
 
         for i in range(self.config.num_hidden_layers):
-            print('---LG', i)
             # Number of layers in a hidden group
             layers_per_group = int(self.config.num_hidden_layers / self.config.num_hidden_groups)
 
