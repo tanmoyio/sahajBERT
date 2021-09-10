@@ -1,5 +1,6 @@
 import ctypes
 import threading
+from functools import partial
 from contextlib import nullcontext
 from copy import deepcopy
 import multiprocessing as mp
@@ -49,8 +50,6 @@ class TPUManager(mp.Process):
             self.start()
 
     def run(self):
-        import threading
-        from functools import partial
         thread = threading.Thread(
             target=partial(xmp.spawn, self.runner, nprocs=self.nprocs, start_method='fork'),
             daemon=True)
@@ -126,22 +125,17 @@ class TPUManager(mp.Process):
                 loss += loss_i
                 del inputs, outputs, loss_i
                 
-            print('4')
 
             ### aggregate gradients from TPUs
             with self.lock if xm.is_master_ordinal() else nullcontext():
                 self._synchronizer.aggregate_grads_on_host(model, add=True)
 
-            print('5')
             # clear aggregated gradients from all devices
             model.zero_grad()
-
-            print('6')
 
             ### accumulate statistics to host
             loss = xm.all_reduce(xm.REDUCE_SUM, loss, scale=1.0)
             xm.do_on_ordinals(self._mark_step_finished, data=(loss,), ordinals=(0,))
-            print('7')
 
     def _mark_step_finished(self, loss):
         self.gradients_accumulated.value = self.batch_size * self.nprocs * self.grad_accumulation_steps
@@ -153,7 +147,6 @@ class TPUSynchronizer:
     """An auxiliary class for manipulating parameters and gradients without producing a ton of XLA graphs"""
 
     def __init__(self, model: nn.Module):
-        self._replica_source = deepcopy(model)
         self.master_model = model.share_memory()
         for param in self.master_model.parameters():
             if param.grad is None:
@@ -161,7 +154,9 @@ class TPUSynchronizer:
             param.grad = param.grad.share_memory_()
 
     def get_device_model_replica(self, device: torch.device, tie_weights: bool = True):
-        replica = self._replica_source.to(device)
+        print('PRE')
+        replica = deepcopy(self.master_model).to(device)
+        print('POST')
         if tie_weights:
             replica.tie_weights()
         for param in replica.parameters():
@@ -186,34 +181,22 @@ class TPUSynchronizer:
     def aggregate_grads_on_host(self, replica: nn.Module, *, add: bool):
         """Aggregate grads from all tpu devices and move them to host"""
         with torch.no_grad():
-            print('--A')
             replica_grads = [param.grad for param in replica.parameters()]
-            print('--B')
             replica_grads = xm.all_reduce(xm.REDUCE_SUM, replica_grads, scale=1.0)
-            print('--C')
             master_grads = [hp.grad for hp in self.master_model.parameters()]
-            print('--D')
             xm.do_on_ordinals(lambda *replica_grads: self._assign(source=replica_grads, target=master_grads, add=add),
                               data=tuple(replica_grads), ordinals=(0,))
-            print('--E')
             # ^-- do_on_ordinals already runs rendezvous at the end
 
     def _assign(self, source: Iterable[torch.Tensor], target: Iterable[torch.Tensor], add: bool, strict: bool = False):
-        print('--D2')
         for source_tensor, target_tensor in zip_longest(source, target):
-            print('--D3')
             assert source_tensor is not None or target_tensor is not None, "Source and target length must match exactly"
             if strict:
                 assert source_tensor.shape == target_tensor.shape
                 assert source_tensor.device == target_tensor.device
                 assert source_tensor.dtype == target_tensor.dtype
             if add:
-                print('--D4')
-                print(target_tensor.shape, source_tensor.shape, target_tensor.dtype, source_tensor.dtype)
-                print(target_tensor)
-                print(source_tensor)
                 target_tensor.add_(source_tensor)
-                print('--D5')
             else:
                 target_tensor.copy_(source_tensor)
 
