@@ -19,12 +19,19 @@ class RotaryEmbeddings(nn.Module):
         :param x: tensor of shape [batch_size, seq_len, nhead, hid_size]
         :param offset: add this value to all position indices
         """
+        print('!!!A')
         seq_len = x.shape[1]
+        print('!!!B')
         cos, sin = getattr(self, 'cos', None), getattr(self, 'sin', None)
+        print('!!!C')
         if cos is None or seq_len + offset >= cos.shape[0] or x.dtype != cos.dtype or x.device != cos.device:
+            print('!!!D')
             cos, sin = get_auxiliary_tensors(seq_len + offset, self.dim, x.dtype, x.device, self.base)
+            print('!!!E')
             self.register_buffer('cos', cos)
+            print('!!!F')
             self.register_buffer('sin', sin)
+            print('!!!G')
 
         return rotate(x, cos[None, offset: seq_len + offset, None, :], sin[None, offset: seq_len + offset, None, :])
 
@@ -48,6 +55,9 @@ def get_auxiliary_tensors(seq_len: int, dim: int, dtype: torch.dtype, device: to
 def rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """ rotate pairwise coordinate using precomputed cos & sin tensors """
     dim = x.shape[-1]
+    print('H')
     x_left, x_right = x.split(split_size=dim // 2, dim=x.ndim - 1)
+    print('I')
     x_rotated = torch.cat([x_right.neg(), x_left], dim=x.ndim - 1)
+    print('J')
     return x * cos + x_rotated * sin
