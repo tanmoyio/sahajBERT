@@ -163,11 +163,15 @@ class TPUSynchronizer:
             param.grad = param.grad.share_memory_()
 
     def get_device_model_replica(self, device: torch.device, tie_weights: bool = True):
+        print('A')
         replica = deepcopy(self.master_model).to(device)
+        print('B')
         if tie_weights:
             replica.tie_weights()
+        print('C')
         for param in replica.parameters():
             param.grad = torch.zeros_like(param, device=device)
+            print('D')
         return replica
 
     def set_host_parameters(self, new_host_parameters):
