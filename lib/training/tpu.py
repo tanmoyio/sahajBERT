@@ -164,9 +164,9 @@ class TPUSynchronizer:
 
     def get_device_model_replica(self, device: torch.device, tie_weights: bool = True):
         print('A')
-        replica = deepcopy(self.master_model)
+        # replica = deepcopy()
         print('A2')
-        replica = replica.to(device)
+        replica = self.master_model.to(device)
         print('B')
         if tie_weights:
             replica.tie_weights()
