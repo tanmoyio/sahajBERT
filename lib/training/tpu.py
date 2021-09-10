@@ -49,7 +49,11 @@ class TPUManager(mp.Process):
             self.start()
 
     def run(self):
-        return xmp.spawn(self.runner, nprocs=self.nprocs, start_method='fork')
+        thread = threading.Thread(
+            target=partial(xmp.spawn, self.runner, nprocs=self.nprocs, start_method='fork'),
+            daemon=True)
+        thread.start()
+        thread.join()
 
     def update_model_parameters(self, new_host_parameters):
         """Schedule TPUs to update model parameters during at the beginning of the next step"""
