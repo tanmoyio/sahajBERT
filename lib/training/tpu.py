@@ -32,10 +32,11 @@ class TPUManager(mp.Process):
                  batch_size: int = 1,
                  grad_accumulation_steps: int = 1,
                  seed_base: int = 42,
+                 staged_init: bool = False,
                  start: bool):
         super().__init__()
         self.lock = mp.Lock()
-        self.nprocs, self.prefetch, self.seed_base = nprocs, prefetch, seed_base
+        self.nprocs, self.prefetch, self.seed_base, self.staged_init = nprocs, prefetch, seed_base, staged_init
         self.batch_size, self.grad_accumulation_steps, self.collate_fn = batch_size, grad_accumulation_steps, collate_fn
         self.step_triggered, self.step_finished = mp.Event(), mp.Event()
         self._synchronizer = TPUSynchronizer(model)
@@ -86,15 +87,24 @@ class TPUManager(mp.Process):
         # set random seed for
         torch.manual_seed(self.seed_base + tpu_index)
 
-        # use staged init to minimize peak RAM usage
-        for init_index in range(xm.xrt_world_size()):
-            xm.rendezvous(f'init_{init_index}')
-            if tpu_index == init_index:
-                model = self._synchronizer.get_device_model_replica(device)
-                data_loader = self._data_manager.get_device_dataloader(
-                    batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
-                data_loader_iter = iter(data_loader)
-                logger.info(f"Process {tpu_index} initialized.")
+        if self.staged_init:
+            # use staged init to minimize peak RAM usage
+            for init_index in range(xm.xrt_world_size()):
+                xm.rendezvous(f'init_{init_index}')
+                if tpu_index == init_index:
+                    model = self._synchronizer.get_device_model_replica(device)
+                    data_loader = self._data_manager.get_device_dataloader(
+                        batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
+                    data_loader_iter = iter(data_loader)
+                    logger.info(f"Process {tpu_index} initialized.")
+        else:
+            model = self._synchronizer.get_device_model_replica(device)
+            data_loader = self._data_manager.get_device_dataloader(
+                batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
+            data_loader_iter = iter(data_loader)
+            logger.info(f"Process {tpu_index} initialized.")
+
+            
 
         xm.rendezvous('init_finished')
 
