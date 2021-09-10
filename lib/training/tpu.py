@@ -203,6 +203,9 @@ class TPUSynchronizer:
                 assert source_tensor.dtype == target_tensor.dtype
             if add:
                 print('--D4')
+                print(target_tensor.shape, source_tensor.shape, target_tensor.dtype, source_tensor.dtype)
+                print(target_tensor)
+                print(source_tensor)
                 target_tensor.add_(source_tensor)
                 print('--D5')
             else:
