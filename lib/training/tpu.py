@@ -79,13 +79,15 @@ class TPUManager(mp.Process):
 
     def runner(self, tpu_index):
         """Run training steps from the perspective of a single TPU core"""
-
+        print(1)
         # acquire the (unique) Cloud TPU core corresponding to this process's index
         device = xm.xla_device()
         logger.info(f"Process {tpu_index} is using {xm.xla_real_devices([str(device)])[0]}")
+        print(2)
 
         # set random seed for
         torch.manual_seed(self.seed_base + tpu_index)
+        print(3)
 
         if self.staged_init:
             # use staged init to minimize peak RAM usage
@@ -98,10 +100,14 @@ class TPUManager(mp.Process):
                     data_loader_iter = iter(data_loader)
                     logger.info(f"Process {tpu_index} initialized.")
         else:
+            print(4)
             model = self._synchronizer.get_device_model_replica(device)
+            print(5)
             data_loader = self._data_manager.get_device_dataloader(
                 batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
+            print(6)
             data_loader_iter = iter(data_loader)
+            print(7)
             logger.info(f"Process {tpu_index} initialized.")
 
             
