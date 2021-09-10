@@ -32,11 +32,10 @@ class TPUManager(mp.Process):
                  batch_size: int = 1,
                  grad_accumulation_steps: int = 1,
                  seed_base: int = 42,
-                 staged_init: bool = False,
                  start: bool):
         super().__init__()
         self.lock = mp.Lock()
-        self.nprocs, self.prefetch, self.seed_base, self.staged_init = nprocs, prefetch, seed_base, staged_init
+        self.nprocs, self.prefetch, self.seed_base = nprocs, prefetch, seed_base
         self.batch_size, self.grad_accumulation_steps, self.collate_fn = batch_size, grad_accumulation_steps, collate_fn
         self.step_triggered, self.step_finished = mp.Event(), mp.Event()
         self._synchronizer = TPUSynchronizer(model)
@@ -79,38 +78,22 @@ class TPUManager(mp.Process):
 
     def runner(self, tpu_index):
         """Run training steps from the perspective of a single TPU core"""
-        print(1)
         # acquire the (unique) Cloud TPU core corresponding to this process's index
         device = xm.xla_device()
         logger.info(f"Process {tpu_index} is using {xm.xla_real_devices([str(device)])[0]}")
-        print(2)
 
         # set random seed for
         torch.manual_seed(self.seed_base + tpu_index)
-        print(3)
 
-        if self.staged_init:
-            # use staged init to minimize peak RAM usage
-            for init_index in range(xm.xrt_world_size()):
-                xm.rendezvous(f'init_{init_index}')
-                if tpu_index == init_index:
-                    model = self._synchronizer.get_device_model_replica(device)
-                    data_loader = self._data_manager.get_device_dataloader(
-                        batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
-                    data_loader_iter = iter(data_loader)
-                    logger.info(f"Process {tpu_index} initialized.")
-        else:
-            print(4)
-            model = self._synchronizer.get_device_model_replica(device)
-            print(5)
-            data_loader = self._data_manager.get_device_dataloader(
-                batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
-            print(6)
-            data_loader_iter = iter(data_loader)
-            print(7)
-            logger.info(f"Process {tpu_index} initialized.")
-
-            
+        # use staged init to minimize peak RAM usage
+        for init_index in range(xm.xrt_world_size()):
+            xm.rendezvous(f'init_{init_index}')
+            if tpu_index == init_index:
+                model = self._synchronizer.get_device_model_replica(device)
+                data_loader = self._data_manager.get_device_dataloader(
+                    batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
+                data_loader_iter = iter(data_loader)
+                logger.info(f"Process {tpu_index} initialized.")            
 
         xm.rendezvous('init_finished')
 
@@ -156,6 +139,7 @@ class TPUSynchronizer:
     """An auxiliary class for manipulating parameters and gradients without producing a ton of XLA graphs"""
 
     def __init__(self, model: nn.Module):
+        self._replica_source = deepcopy(model)
         self.master_model = model.share_memory()
         for param in self.master_model.parameters():
             if param.grad is None:
@@ -163,17 +147,11 @@ class TPUSynchronizer:
             param.grad = param.grad.share_memory_()
 
     def get_device_model_replica(self, device: torch.device, tie_weights: bool = True):
-        print('A')
-        # replica = deepcopy()
-        print('A2')
-        replica = self.master_model.to(device)
-        print('B')
+        replica = self._replica_source.to(device)
         if tie_weights:
             replica.tie_weights()
-        print('C')
         for param in replica.parameters():
             param.grad = torch.zeros_like(param, device=device)
-            print('D')
         return replica
 
     def set_host_parameters(self, new_host_parameters):
