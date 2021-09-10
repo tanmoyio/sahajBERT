@@ -84,6 +84,7 @@ class TPUManager(mp.Process):
     def runner(self, tpu_index):
         """Run training steps from the perspective of a single TPU core"""
         # acquire the (unique) Cloud TPU core corresponding to this process's index
+
         device = xm.xla_device()
         logger.info(f"Process {tpu_index} is using {xm.xla_real_devices([str(device)])[0]}")
 
@@ -98,14 +99,13 @@ class TPUManager(mp.Process):
                 data_loader = self._data_manager.get_device_dataloader(
                     batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, pin_memory=False)
                 data_loader_iter = iter(data_loader)
-                logger.info(f"Process {tpu_index} initialized.")            
+                logger.info(f"Process {tpu_index} initialized.")
 
         xm.rendezvous('init_finished')
 
         while True:
             self.step_triggered.wait()
             xm.rendezvous('before_step')
-
             if xm.is_master_ordinal():
                 self.step_triggered.clear()
 
@@ -124,12 +124,10 @@ class TPUManager(mp.Process):
                 loss_i.backward()
                 loss += loss_i
                 del inputs, outputs, loss_i
-                
 
             ### aggregate gradients from TPUs
             with self.lock if xm.is_master_ordinal() else nullcontext():
                 self._synchronizer.aggregate_grads_on_host(model, add=True)
-
             # clear aggregated gradients from all devices
             model.zero_grad()
 
@@ -154,9 +152,7 @@ class TPUSynchronizer:
             param.grad = param.grad.share_memory_()
 
     def get_device_model_replica(self, device: torch.device, tie_weights: bool = True):
-        print('PRE')
         replica = deepcopy(self.master_model).to(device)
-        print('POST')
         if tie_weights:
             replica.tie_weights()
         for param in replica.parameters():
