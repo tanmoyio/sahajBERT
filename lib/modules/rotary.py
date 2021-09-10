@@ -54,7 +54,7 @@ def get_auxiliary_tensors(seq_len: int, dim: int, dtype: torch.dtype, device: to
     print('?-5')
     cos = torch.cos(freqs)
     print('?-6')
-    sin = torch.sin(freqs, out=freqs)
+    sin = freqs.sin_()
     print('?-7')
     try:
         return cos.to(dtype), sin.to(dtype)
