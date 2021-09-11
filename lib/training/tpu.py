@@ -1,5 +1,6 @@
 import ctypes
 import threading
+from functools import partial
 from contextlib import nullcontext
 from copy import deepcopy
 import multiprocessing as mp
@@ -49,7 +50,11 @@ class TPUManager(mp.Process):
             self.start()
 
     def run(self):
-        return xmp.spawn(self.runner, nprocs=self.nprocs, start_method='fork')
+        thread = threading.Thread(
+            target=partial(xmp.spawn, self.runner, nprocs=self.nprocs, start_method='fork'),
+            daemon=True)
+        thread.start()
+        thread.join()
 
     def update_model_parameters(self, new_host_parameters):
         """Schedule TPUs to update model parameters during at the beginning of the next step"""
@@ -78,7 +83,6 @@ class TPUManager(mp.Process):
 
     def runner(self, tpu_index):
         """Run training steps from the perspective of a single TPU core"""
-
         # acquire the (unique) Cloud TPU core corresponding to this process's index
         device = xm.xla_device()
         logger.info(f"Process {tpu_index} is using {xm.xla_real_devices([str(device)])[0]}")

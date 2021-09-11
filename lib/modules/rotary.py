@@ -41,7 +41,7 @@ def get_auxiliary_tensors(seq_len: int, dim: int, dtype: torch.dtype, device: to
 
     freqs = (time_ix[:, None] * inv_freq[None, :])
     cos = torch.cos(freqs)
-    sin = torch.sin(freqs, out=freqs)
+    sin = freqs.sin_()
     return cos.to(dtype), sin.to(dtype)
 
 
