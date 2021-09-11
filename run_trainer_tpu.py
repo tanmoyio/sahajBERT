@@ -131,14 +131,14 @@ def main():
     collaborative_training_callback.on_train_begin(training_args, state, control)
     tpu_manager.update_model_parameters(model.parameters())
 
-    wandb.init(project="huggingface")
+    wandb.init(project="huggingface", name=training_args.run_name)
 
     while True:
         start_time = time.perf_counter()
         loss, num_accumulated = tpu_manager.step()
         time_delta = time.perf_counter() - start_time
         logger.info(f"Accumulated {num_accumulated} gradients at {num_accumulated / time_delta:.3f} samples/second.")
-        wandb.log({"train/loss": loss})
+        wandb.log({"train/loss": loss, "train/learning_rate": collaborative_optimizer.scheduler.get_lr()})
 
         with torch.no_grad():
             for param, grad_from_tpu in zip(model.parameters(), tpu_manager.get_aggregated_gradients()):
