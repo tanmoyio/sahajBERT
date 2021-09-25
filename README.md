@@ -16,19 +16,15 @@ Model link - [sahajBERT-xlarge](https://huggingface.co/Upload/sahajbert2)
 
 ### NER
 
-##### 1. Install Hivemind, seqeval
-```
-pip install -q https://github.com/learning-at-home/hivemind
-pip install -q https://github.com/learning-at-home/hivemind/archive/sahaj2.zip
-pip install seqeval
-```
-##### 2. Now clone the sahajbert repo and prepare the env by intalling requirements.
+##### 1. Now clone the sahajbert repo and prepare the env by intalling requirements.
 ```
 git clone https://github.com/tanmoyio/sahajbert.git
 cd sahajbert
 pip install -r requirements.txt
+pip install -q https://github.com/learning-at-home/hivemind/archive/sahaj2.zip
+pip install seqeval
 ```
-###### 3. Run the following command
+###### 2. Run the following command
 ```
 !python train_ner.py \
   --model_name_or_path Upload/sahajbert2 \
