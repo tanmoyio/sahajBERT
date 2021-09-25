@@ -16,7 +16,7 @@ Model link - [sahajBERT-xlarge](https://huggingface.co/Upload/sahajbert2)
 
 ### NER
 
-##### 1. Now clone the sahajbert repo and prepare the env by intalling requirements.
+##### 1. Clone the sahajbert repo and prepare the env by intalling requirements.
 ```
 git clone https://github.com/tanmoyio/sahajbert.git
 cd sahajbert
