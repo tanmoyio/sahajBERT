@@ -1,4 +1,4 @@
-# Copyright 2020 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2020 The HuggingFace Team All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Source: https://github.com/huggingface/transformers/blob/master/examples/pytorch/text-classification/run_glue.py
-import logging
+# Source: https://github.com/huggingface/transformers/blob/master/examples/pytorch/token-classification/run_ner.py
 import os
+import logging
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -26,21 +26,25 @@ from datasets import load_dataset, load_metric
 import transformers
 from transformers import (
     AutoConfig,
-    AutoModelForSequenceClassification,
+    AutoModelForTokenClassification,
     AutoTokenizer,
+    DataCollatorForTokenClassification,
     EarlyStoppingCallback,
     HfArgumentParser,
     PreTrainedTokenizerFast,
     Trainer,
     TrainingArguments,
-    default_data_collator,
     set_seed,
 )
 from transformers.trainer_utils import is_main_process
 
 from tokenization_albert_bengali_fast import AlbertBengaliTokenizerFast
 from huggingface_auth import authorize_with_huggingface
+from lib.models.lean_albert import LeanAlbertConfig, LeanAlbertModel
+from transformers import AlbertForTokenClassification, PreTrainedModel
+
 logger = logging.getLogger(__name__)
+
 os.environ["WANDB_PROJECT"] = "sahajBERT2-xlarge-ner"
 os.environ["HF_EXPERIMENT_ID"] = "15"
 os.environ["WANDB_API_KEY"] = "61612ca9b99e6a477893d7eb93a390462543fe7f"
@@ -53,23 +57,25 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
-        'Upload/sahajbert2', 
+        default='Upload/sahajbert2',
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
     dropout_prob: float = field(default=0.1, metadata={"help": "Dropout probability for model."})
 
 
+class LeanAlbertForTokenClassification(AlbertForTokenClassification, PreTrainedModel):
 
-from lib.models.lean_albert import LeanAlbertConfig, LeanAlbertModel
-from transformers import AlbertForSequenceClassification, PreTrainedModel
-
-class LeanAlbertForSequenceClassification(AlbertForSequenceClassification, PreTrainedModel):
     def __init__(self, config: LeanAlbertConfig):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.config = config
-        self.albert = LeanAlbertModel(config, add_pooling_layer=True)
-        self.dropout = nn.Dropout(config.classifier_dropout_prob)
+
+        self.albert = LeanAlbertModel(config, add_pooling_layer=False)
+        classifier_dropout_prob = (
+            config.classifier_dropout_prob
+            if config.classifier_dropout_prob is not None
+            else config.hidden_dropout_prob
+        )
+        self.dropout = nn.Dropout(classifier_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
 
         self.init_weights()
@@ -79,34 +85,41 @@ class LeanAlbertForSequenceClassification(AlbertForSequenceClassification, PreTr
 class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
-    Using `HfArgumentParser` we can turn this class
-    into argparse arguments to be able to specify them on
-    the command line.
     """
 
-    task_name: Optional[str] = field(default="ncc", metadata={"help": "The name of the task to train on: ncc"})
+    task_name: Optional[str] = field(default="ner", metadata={"help": "The name of the task (ner, pos...)."})
     dataset_name: Optional[str] = field(
-        default="indic_glue", metadata={"help": "The name of the dataset to use (via the datasets library)."}
+        default="wikiann", metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
     dataset_config_name: Optional[str] = field(
-        default="sna.bn", metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
+        default="bn", metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
     max_seq_length: int = field(
         default=128,
         metadata={
             "help": "The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded."
+                    "than this will be truncated, sequences shorter will be padded."
         },
-    )    
+    )
     pad_to_max_length: bool = field(
         default=True,
         metadata={
-            "help": "Whether to pad all samples to `max_seq_length`. "
-            "If False, will pad the samples dynamically when batching to the maximum length in the batch."
+            "help": "Whether to pad all samples to model maximum sentence length. "
+                    "If False, will pad the samples dynamically when batching to the maximum length in the batch. More "
+                    "efficient on GPU but very bad for TPU."
+        },
+    )
+    label_all_tokens: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to put the label for one word on all tokens of generated by that word or just on the "
+                    "one (in which case the other tokens will have a padding index)."
         },
     )
 
     def __post_init__(self):
+        if self.dataset_name is None:
+            raise ValueError("Need a dataset name.")
         self.task_name = self.task_name.lower()
 
 
@@ -164,25 +177,27 @@ def run(model_args, data_args, training_args, additional_training_args):
     # Get the datasets.
     datasets = load_dataset(data_args.dataset_name, data_args.dataset_config_name)
 
-    # Labels
-    text_column_name = "text"
-    label_column_name = "label"
-    label_list = datasets["train"].features[label_column_name].names
-    num_labels = len(label_list)
+    # Set text and label column names
+    features = datasets["train"].features
+    text_column_name = "tokens"
+    label_column_name = "ner_tags"
+    label_list = features[label_column_name].feature.names
     # No need to convert the labels since they are already ints.
-    label_to_id = {i: i for i in range(num_labels)}
+    label_to_id = {i: i for i in range(len(label_list))}
+    num_labels = len(label_list)
 
     # Load pretrained model and tokenizer
+    tokenizer = AlbertBengaliTokenizerFast.from_pretrained(model_args.model_name_or_path)
     config = LeanAlbertConfig.from_pretrained(
         model_args.model_name_or_path,
         num_labels=num_labels,
         hidden_dropout_prob=model_args.dropout_prob,
         finetuning_task=data_args.task_name,
+        vocab_size=len(tokenizer),
     )
-    tokenizer = AlbertBengaliTokenizerFast.from_pretrained(model_args.model_name_or_path)
-    model = LeanAlbertForSequenceClassification.from_pretrained(model_args.model_name_or_path)
+    model = LeanAlbertForTokenClassification.from_pretrained(model_args.model_name_or_path, config=config)
 
-    # Preprocessing the datasets
+    # Preprocessing the dataset
     # Padding strategy
     padding = "max_length" if data_args.pad_to_max_length else False
 
@@ -193,63 +208,102 @@ def run(model_args, data_args, training_args, additional_training_args):
         )
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
 
-    def preprocess_function(examples):
-        # Tokenize the texts
-        result = tokenizer(examples[text_column_name], padding=padding, max_length=max_seq_length, truncation=True)
+    # Tokenize all texts and align the labels with them.
+    def tokenize_and_align_labels(examples):
+        tokenized_inputs = tokenizer(
+            examples[text_column_name],
+            padding=padding,
+            max_length=max_seq_length,
+            truncation=True,
+            # We use this argument because the texts in our dataset are lists of words (with a label for each word).
+            is_split_into_words=True,
+        )
+        labels = []
+        for i, label in enumerate(examples[label_column_name]):
+            word_ids = tokenized_inputs.word_ids(batch_index=i)
+            previous_word_idx = None
+            label_ids = []
+            for word_idx in word_ids:
+                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
+                # ignored in the loss function.
+                if word_idx is None:
+                    label_ids.append(-100)
+                # We set the label for the first token of each word.
+                elif word_idx != previous_word_idx:
+                    label_ids.append(label_to_id[label[word_idx]])
+                # For the other tokens in a word, we set the label to either the current label or -100, depending on
+                # the label_all_tokens flag.
+                else:
+                    label_ids.append(label_to_id[label[word_idx]] if data_args.label_all_tokens else -100)
+                previous_word_idx = word_idx
 
-        # Map labels to IDs (not necessary for GLUE tasks)
-        if label_to_id is not None and "label" in examples:
-            result["label"] = [(label_to_id[l] if l != -1 else -1) for l in examples["label"]]
-        return result
+            labels.append(label_ids)
+        tokenized_inputs["labels"] = labels
+        return tokenized_inputs
 
     train_dataset = datasets["train"]
-    train_dataset = train_dataset.map(preprocess_function, batched=True)
+    train_dataset = train_dataset.map(tokenize_and_align_labels, batched=True)
 
     valid_dataset = datasets["validation"]
-    valid_dataset = valid_dataset.map(preprocess_function, batched=True)
+    valid_dataset = valid_dataset.map(tokenize_and_align_labels, batched=True)
 
     test_dataset = datasets["test"]
-    test_dataset = test_dataset.map(preprocess_function, batched=True)
+    test_dataset = test_dataset.map(tokenize_and_align_labels, batched=True)
 
-    # Data collator will default to DataCollatorWithPadding, so we change it if we already did the padding
-    data_collator = default_data_collator if data_args.pad_to_max_length else None
+    # Data collator
+    data_collator = DataCollatorForTokenClassification(tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None)
 
     # Metrics
-    metric = load_metric("accuracy")
+    metric = load_metric("seqeval")
 
     def compute_metrics(p):
-        preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
-        preds = np.argmax(preds, axis=1)
-        result = metric.compute(predictions=preds, references=p.label_ids)
-        if len(result) > 1:
-            result["combined_score"] = np.mean(list(result.values())).item()
-        return result
+        predictions, labels = p
+        predictions = np.argmax(predictions, axis=2)
+
+        # Remove ignored index (special tokens)
+        true_predictions = [
+            [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
+            for prediction, label in zip(predictions, labels)
+        ]
+        true_labels = [
+            [label_list[l] for (p, l) in zip(prediction, label) if l != -100]
+            for prediction, label in zip(predictions, labels)
+        ]
+
+        results = metric.compute(predictions=true_predictions, references=true_labels)
+        return {
+            "precision": results["overall_precision"],
+            "recall": results["overall_recall"],
+            "f1": results["overall_f1"],
+            "accuracy": results["overall_accuracy"],
+        }
 
     # Early stopping
     early_stopping = EarlyStoppingCallback(
         early_stopping_patience=additional_training_args.early_stopping_patience,
         early_stopping_threshold=additional_training_args.early_stopping_threshold,
     )
-    callbacks = [early_stopping]
 
+    callbacks = [early_stopping]
     # Initialize Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
-        compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        compute_metrics=compute_metrics,
         callbacks=callbacks,
     )
+
     trainer.args.run_name = authorizer.username
 
     # Training
     train_result = trainer.train()
     metrics = train_result.metrics
-    metrics["train_samples"] = len(train_dataset)
     trainer.save_model()  # Saves the tokenizer too for easy upload
+    metrics["train_samples"] = len(train_dataset)
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
