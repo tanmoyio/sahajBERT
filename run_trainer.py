@@ -14,7 +14,7 @@ import transformers
 from transformers import set_seed, HfArgumentParser
 from transformers.optimization import get_linear_schedule_with_warmup
 from transformers.trainer_utils import is_main_process
-from transformers import AlbertTokenizerFast
+from transformers import AlbertTokenizerFast, DataCollatorForLanguageModeling
 from transformers.trainer import Trainer
 
 import hivemind
@@ -27,7 +27,6 @@ from lib.training.noop import NoOpScheduler, IgnoreGradManipulations
 from lib.training.offload import OffloadOptimizer
 
 from data import make_lazy_wikioscar_dataset
-from data_collator import AlbertDataCollatorForWholeWordMask
 from arguments import CollaborationArguments, DatasetArguments, AlbertTrainingArguments, AveragerArguments
 import utils
 from huggingface_auth import authorize_with_huggingface
@@ -185,7 +184,7 @@ def main():
     training_dataset = make_lazy_wikioscar_dataset(tokenizer, shuffle_seed=hash(local_public_key) % 2 ** 31)
 
     # This data collator will take care of randomly masking the tokens.
-    data_collator = AlbertDataCollatorForWholeWordMask(
+    data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, pad_to_multiple_of=training_args.pad_to_multiple_of)
 
     # Note: the code below creates the trainer with dummy scheduler and removes some callbacks.
