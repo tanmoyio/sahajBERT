@@ -27,16 +27,10 @@ pip install seqeval
 ###### 2. Run the following command
 ```
 !python train_ner.py \
-  --model_name_or_path Upload/sahajbert2 \
-  --output_dir sahajbert/ner \
-  --learning_rate 1e-5  \
-  --max_seq_length 128  \
-  --num_train_epochs 20 \
-  --per_device_train_batch_size 4 \
-  --per_device_eval_batch_size 4 \
-  --gradient_accumulation_steps 32 \
-  --early_stopping_patience 3 \
-  --early_stopping_threshold 0.01
+  --model_name_or_path Upload/sahajbert2 --output_dir sahajbert/ner \
+  --learning_rate 3e-5 --max_seq_length 256 --num_train_epochs 20 \
+  --per_device_train_batch_size 8 --per_device_eval_batch_size 8 --gradient_accumulation_steps 8 \
+  --early_stopping_patience 3 --early_stopping_threshold 0.01
 ```
 ###### This will give you a prompt, and you need to provide your Huggingface username and password. (We don't store huggingface password) this is only to allow your score to be reflected in the leaderboard.
 
@@ -46,4 +40,10 @@ If you are using GPU, or finetuning it with colab GPU then you might want to adj
 
 ### NCC
 
-[Will be added soon]
+```
+!python train_ncc.py \
+  --model_name_or_path Upload/sahajbert2 --output_dir sahajbert/ner \
+  --learning_rate 3e-5 --max_seq_length 64 --num_train_epochs 20 \
+  --per_device_train_batch_size 8 --per_device_eval_batch_size 8 --gradient_accumulation_steps 8 \
+  --early_stopping_patience 3 --early_stopping_threshold 0.01
+```
