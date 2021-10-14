@@ -43,7 +43,7 @@ If you are using GPU, or finetuning it with colab GPU then you might want to adj
 ```
 !python train_ncc.py \
   --model_name_or_path Upload/sahajbert2 --output_dir sahajbert/ner \
-  --learning_rate 3e-5 --max_seq_length 64 --num_train_epochs 20 \
+  --learning_rate 1e-5 --max_seq_length 128 --num_train_epochs 20 \
   --per_device_train_batch_size 8 --per_device_eval_batch_size 8 --gradient_accumulation_steps 8 \
   --early_stopping_patience 3 --early_stopping_threshold 0.01
 ```
