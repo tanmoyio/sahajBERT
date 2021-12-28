@@ -18,7 +18,7 @@ Model link - [sahajBERT-xlarge](https://huggingface.co/Upload/sahajbert2)
 
 ##### 1. Clone the sahajbert repo and prepare the env by intalling requirements.
 ```
-git clone https://github.com/tanmoyio/sahajbert.git
+git clone https://github.com/tanmoyio/sahajBERT.git
 cd sahajbert
 pip install -r requirements.txt
 pip install -q https://github.com/learning-at-home/hivemind/archive/sahaj2.zip
